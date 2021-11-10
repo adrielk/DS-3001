@@ -100,6 +100,7 @@ loan_pred <- loan_data[ , c(-3,-5)]
 str(loan_pred)
 
 ```
+
 So now we can create our decision tree
 
 ```{r}
@@ -155,10 +156,8 @@ View(test)
 
 loan_eval <-(predict(loan_tree,newdata = test))#generates 1s and 0s
 View(loan_eval)
-loan_tree
 
-#predict is polymorphic, meaning it doesn't care about the type of model passed into it
-loan_eval_prob <- predict(loan_tree,newdata = test, type = "prob")#this gives us the predicted prob, we will need these later for the fairness evaluation
+loan_eval_prob <- predict(loan_tree, newdata = test, type = "prob")#this gives us the predicted prob, we will need these later for the fairness evaluation
 View(loan_eval_prob)
 
 View(test$outcome)
@@ -196,7 +195,6 @@ ROC/AUC
 
 loan_eval <- tibble(pred_class=loan_eval, pred_prob=loan_eval_prob$`1`,target=as.numeric(test$outcome))
 
-str(loan_eval)
 View(loan_eval)
 
 pred <- prediction(loan_eval$pred_prob,loan_eval$target)
