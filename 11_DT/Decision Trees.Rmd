@@ -272,7 +272,7 @@ based approach.
 
 
 ```{r}
-tree_example <- tibble(import("data/pregnancy.csv", check.names= TRUE))
+tree_example <- tibble(read_csv("data/pregnancy.csv"))
 
 describe(tree_example)
 View(tree_example)

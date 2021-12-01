@@ -1,6 +1,6 @@
 ---
 title: "In Class DT"
-author: "Brian Wright"
+author: "Adriel Kim"
 date: "December 7, 2017"
 output: html_document
 editor_options: 
@@ -9,7 +9,32 @@ editor_options:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
 ```
+
+```{r}
+library(rio)
+library(plyr)
+library(tidyverse)
+library(rpart)
+library(psych)
+library(pROC)
+#install.packages("rpart.plot")
+library(rpart.plot)
+#install.packages("rattle")
+library(rattle)
+library(caret)
+library(C50) #Need this to pass into caret 
+library(mlbench)
+library(MLmetrics)
+
+library(RColorBrewer)
+library(ROCR)
+
+library(mltools)
+library(data.table)
+```
+## Problem Description
 
 Congrats! You just graduated UVA's MSDS program and got a job working at the 
 Treasury Department. In partnership with Congress members the Treasury has been 
@@ -30,13 +55,28 @@ to you at UVA in a undergrad data science course and have outline
 (you can add more or combine if needed).  As always, you will need 
 to make sure to #comment your work heavily. 
 
+## Loading Data
 
 ```{r}
+#loading data and adding appropriate header labels.
 url <- "http://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.data"
-
+names <- c("age","workclass","fnlwgt","education","education-num","marital-status","occupation","relationship","race","sex","capital-gain","capital-loss","hours-per-week","native-country", "salary")
 xx <- readr::read_csv(url)
+names(xx) <- names
+xx <- na.omit(xx)#omit any rows with NA values
+selection =c('workclass' ,'education', 'marital-status', 'occupation', 'relationship', 'race', 'sex', 'native-country', 'salary')
+factors =c('workclass' ,'education', 'marital-status', 'occupation', 'relationship', 'race', 'sex', 'native-country')
+xx <- xx[,selection]
+#xx$salary <- as.factor(xx$salary)#convert to factor, essentially a categorical variable
+#xx$`native-country` <- as.factor(xx$`native-country`)
+xx[,factors] <- lapply(xx[,factors], as.factor)
+xx1h <- one_hot(as.data.table(xx),cols = "auto",sparsifyNAs = TRUE,naCols = TRUE,dropCols = TRUE,dropUnusedLevels = TRUE) 
+xx1h$salary = as.factor(xx1h$salary)
+levels(xx$salary) <- c("less", "greater")
+levels(xx1h$salary) <- c("less", "greater")
 
 View(xx)
+View(xx1h)
 ```
 
 
@@ -46,16 +86,6 @@ View(xx)
 mindful of how the model will be used in practice.
 - Make sure all your variables are the correct type (factor, character, etc.)
 
-
-
-```{r}
-#1 Load the data, check for missing data and ensure the labels are correct. 
-```
-
-```{r}
-#2 Ensure all the variables are classified correctly including the target 
-# variable
-```
 
 ```{r}
 #3 Don't check for correlated variables....because it doesn't matter with 
@@ -67,72 +97,406 @@ mindful of how the model will be used in practice.
 #because DTs don't give a ish, they make local decisions...keeps getting easier
 ```
 
+
 ```{r}
 #5 Determine the baserate or prevalence for the classifier, 
-# what does this number mean?  
+# what does this number mean? 
+
+#Prevalence is the proportion of postive examples in the dataset
+(prevalence <- table(xx$salary)[[2]]/length(xx$salary))
 ```
 
+## Splitting data
 ```{r}
 #6 Split your data into test, tune, and train. (70/15/15)
+part_index_1 <- caret::createDataPartition(xx1h$salary,
+                                           times=1,
+                                           p = 0.70,
+                                           groups=1,
+                                           list=FALSE)
+
+train <- xx1h[part_index_1, ]
+tune_and_test <- xx1h[-part_index_1, ]
+
+#The we need to use the function again to create the tuning set 
+
+tune_and_test_index <- createDataPartition(tune_and_test$salary,
+                                           p = .5,
+                                           list = FALSE,
+                                           times = 1)
+
+tune <- tune_and_test[tune_and_test_index, ]#aka, validation set
+test <- tune_and_test[-tune_and_test_index, ]#final testing set
+
+
+dim(train)
+dim(test)# these will be slightly off because the data set isn't perfectly even
+#buts its not a issue. 
+dim(tune)
+#View(train)
+View(train)
+View(tune)
 ```
 
-```{r}
-#7 Build your model using the training data and default settings in caret, 
-# double check to make sure you are using a cross-validation training approach
-```
+## Impotant Variables
 
+The most important variables for the tree are relationship, capital-gain, and age.
 ```{r}
+# Choose the features and classes
 #8 View the results, what is the most important variable for the tree? 
+
+features <- train[,-c("salary")]#dropping 12 and 13. 12 essentially predicts 13 
+View(features)
+View(train[,c("salary")])
+#View(features)
+#perfectly and 13 is our target variable
+#View(features)
+train$salary = as.factor(train$salary)
+levels(train$salary) <- c("less", "greater")
+
+target <- train$salary
+
+View(target)
+
+str(features)
+str(target)
+#Cross validation process 
+
+fitControl <- trainControl(method = "repeatedcv",
+                          number = 5,
+                          repeats = 1, 
+                          returnResamp="all",
+                          classProbs = TRUE,
+                          allowParallel = TRUE) 
+
+# number - number of folds
+# repeats - number of times the CV is repeated, here it's 5 take the average of
+# those 5 repeats
+
+# Grid search options for each of the models available in CARET
+# http://topepo.github.io/caret/train-models-by-tag.html#tree-based-model
+
+grid <- expand.grid(.winnow = c(TRUE,FALSE), 
+                    .trials=c(1,5,10,15,20), 
+                    .model="tree")
+
+#expand.grid - series of options that are available for model training
+
+#winnow - whether to reduce the feature space -  Works to remove unimportant 
+#features but it doesn't always work, in the above we are winnowing.  
+
+#Actually a pretty good StackExchange post on winnowing:
+#https://stats.stackexchange.com/questions/83913/understanding-the-output-of-c5-0-classification-model-using-the-caret-package
+
+#trails - number of boosting iterations to try, 1 indicates a single model 
+#model - type of ml model
+
+View(features)
+str(features)
+str(target)
+set.seed(1984)
+salary_mdl <- train(x=features,
+                y=target,
+                method="C5.0",
+                tuneGrid=grid,
+                trControl=fitControl,
+                verbose=TRUE)
+
+salary_mdl #provides us the hyper-parameters that were selected through the grid
+# search process. 
+
+#View(salary_mdl$pred)
+
+# visualize the re-sample distributions
+xyplot(salary_mdl,type = c("g", "p", "smooth"))
+
+varImp(salary_mdl)
+
 ```
 
+## Decision Tree Visualization
+
 ```{r}
-#9 Plot the output of the model to see the tree visually 
+#View(xx)
+
+#9 Plot the output of the model to see the tree visually
+# In order for this decision tree algorithm to run, 
+# all the variables will need to be turned into factors. 
+#Make sure your variables are classified correctly. 
+
+
+tree_example = xx #lapply(xx, function(x) as.factor(x))
+
+#This is a handy reference on apply(), lapply(), sapply() are 
+#all essentially designed to avoid for loops, especially in combination 
+#with (function (x))
+
+#https://www.r-bloggers.com/using-apply-sapply-lapply-in-r/
+
+str(tree_example)
+
+tree_example <- as_tibble(tree_example)
+
+table(tree_example$salary)
+#Also want to add data labels to the target
+tree_example$salary <- factor(tree_example$salary,labels = c("0", "1"))
+
+#Build the model
+# Train the tree with the rpart() function.
+# We'll need to set the seed to make the results reproducible. 
+set.seed(1980)
+tree_example_tree_gini = rpart(salary~.,  #<- formula, response variable ~ predictors
+                           #   "." means "use all other variables in data"
+                            method = "class",#<- specify method, use "class" for tree
+                            parms = list(split = "gini"),#<- method for choosing tree split
+                            data = tree_example,#<- data used
+                            control = rpart.control(cp=.001))
+
+#Look at the results
+tree_example_tree_gini
+
+View(tree_example_tree_gini$frame)
+
+# dev - the deviance or the total sum of squares within the node, so if
+#       you divide this by the sample size in each node you get the variance
+# yval - average value of the trait at the node (for categorical values identifies the group)  
+# complexity - the value of the parameter used to make the split (gini or information gain)
+# ncompete - number of competing variables that can be considered for this split
+# nsurrogate - number of surrogate trees (used when there is missing data in the test data set, to mimic the effects of splits in the training data set)
+# yval2 - average value of the trait at the node (for categorical values identifies the group), although it can mean different things when the rpart function is used for regression trees or other analyses 
+
+
+rpart.plot(tree_example_tree_gini, type =4, extra = 101)#package rpart.plot
+#export this to  pdf for better viewing
+?rpart.plot
+
+#The "cptable" element includes the optimal prunnings based on the complexity parameter.
+
+View(tree_example_tree_gini$cptable)
+
+plotcp(tree_example_tree_gini)#Produces a "elbow chart" for various cp values
+
+# Here's a summary:
+# CP - complexity parameter, or the value of the splitting criterion (gini or information gain)
+# nsplit - number of splits
+# rel error - the relative error rate for predictions for the data that generated the tree
+# xerror - cross-validated error, default cross-validation setting uses 10 folds
+# xstd - the standard derivation of cross-validated errors
+
+# NOTE: 
+# For pruning a tree, the rule of thumb is to choose the split at the lowest level 
+# where the rel_error + xstd < xerror
+
+cptable_ex <- as_tibble(tree_example_tree_gini$cptable, )
+str(cptable_ex)
+
+cptable_ex$opt <- cptable_ex$`rel error`+ cptable_ex$xstd
+
+View(cptable_ex)
+
+# Ok so let's compare the cptable_ex, the cpplot and the decision tree plot, 
+# they all covered around 8ish splits of the tree or a cp of .014ish. 
+# Print out skips splits that result in terminal leaf nodes for 
+# some reason, so makes it a little hard to interpret 
+
+rpart.plot(tree_example_tree_gini, type =4, extra = 101)
+
+# Shows the reduction in error provided by including a given variable 
+tree_example_tree_gini$variable.importance
 ```
+
+## Confusion Matrix
+
+I believe the most relevant metric for our question is sensitivity/recall. The context of this problem are tax policies. Assuming that the goal is to aid those in need of finanical support, it's better to maximize recall so as to be able to accommodate those in need. However, one could also argue that precision is more important so as to avoid tax policies that can be easily taken advantage of by those who do not really need it.
 
 ```{r}
 #10 Use the validation set and the predict function with your model to the
-# estimate the target variable.
-```
+# estimate the target variable
 
-```{r}
 #11 Compare the predicted values to those of the actual by generating a 
 # matrix ("by-hand").
+salary_mdl
+salary_pred_tune = predict(salary_mdl,tune, type= "raw")
+
+View(as_tibble(salary_pred_tune))
+
+levels(tune$salary) <- c("less", "greater")
+View(tune$salary)
+View(tune)
+
+
+#Lets use the confusion matrix
+
+(salary_eval <- confusionMatrix(as.factor(salary_pred_tune), 
+                as.factor(tune$salary), 
+                dnn=c("Prediction", "Actual"), 
+                mode = "sens_spec"))
+
+table(tune$salary)
+
+salary_pred_tune_p = predict(salary_mdl,tune,type= "prob")
+
+
+View(salary_pred_tune_p)
 ```
 
 ```{r}
 #12 Use the the confusion matrix function to check a variety of metrics 
 # and comment on the metric that might be best for this type of analysis given your question.  
+
 ```
 
+## ROC/AUC
 ```{r}
-#13 Generate a ROC and AUC output, interpret the results
+#In order to use most evaluation packages it's just easier to have are predictions and targets in one place. 
+salary_eval <- tibble(pred_class=salary_pred_tune, pred_prob=salary_pred_tune_p$greater,target=tune$salary)
+
+# View(salary_pred_tune$greater)
+# View(tune$salary)
+# View(as.numeric(tune$salary))
+#View(salary_eval)
+
+pred <- prediction(salary_eval$pred_prob,salary_eval$target)
+# View(pred)
+
+tree_perf <- performance(pred,"tpr","fpr")
+
+plot(tree_perf, colorize=TRUE)
+abline(a=0, b= 1)
+
+tree_perf_AUC <- performance(pred,"auc")
+
+#print(tree_perf_AUC@y.values)
+
 ```
+
+
+## Evaluation Metrics
+
+As I increased theshold, specificity increased but sensitivity decreased. When I decreased the threshold, sensitivty increased while specificity decreased. This is a trade off between recall and precision.
 
 ```{r}
 #14 Use the predict function to generate percentages, then select several 
 # different threshold levels using the confusion matrix function and 
 # interpret the results. What patterns did you notice, did the evaluation metrics change? 
+
+adjust_thres <- function(x, y, z) {
+  #x=pred_probablities, y=threshold, z=test_DEATH_EVENT
+  thres <- as.factor(ifelse(x > y, 1,0))
+  confusionMatrix(thres, z, positive = "1", dnn=c("Prediction", "Actual"), mode = "everything")
+}
+levels(tune$salary) <- c("0", "1")
+
+salary_pred_tune = predict(salary_mdl,tune, type= "prob")
+
+#View(salary_pred_tune)
+adjust_thres(salary_pred_tune$greater,.80, as.factor(tune$salary)) 
+
+
 ```
+
+## Adjusting Hyper-paramters
+
+The model's performance increases when I increased the number of iterations and folds. Intuitively, this makes sense since the model's performance is averaged over more repetitions. Effectively, this acts as regularization which allows the model to better generalize to the data.
 
 ```{r}
 #15 Based on your understanding of the model and data adjust several of the hyper-parameters via the built in train control function in caret or build and try new features, does the model quality improve? If so how and why, if not, why not?
-# Use this link: https://rdrr.io/cran/caret/man/trainControl.html to select changes,
-# you aren't expected to understand all these options but explore one or two and 
-# see what happens. 
+
+
+features <- train[,-c("salary")]#dropping 12 and 13. 12 essentially predicts 13 
+#perfectly and 13 is our target variable
+#View(features)
+levels(train$salary) <- c("lower", "greater")
+
+target <- train$salary
+
+str(features)
+str(target)
+#Cross validation process 
+
+fitControl <- trainControl(method = "repeatedcv",
+                          number = 10,
+                          repeats = 1, 
+                          returnResamp="all",
+                          classProbs = TRUE,
+                          allowParallel = TRUE) 
+
+
+set.seed(1984)
+salary_mdl <- train(x=features,
+                y=target,
+                method="C5.0",
+                trControl=fitControl,
+                verbose=TRUE)
+
+salary_mdl #provides us the hyper-parameters that were selected through the grid
+
+
+
+xyplot(salary_mdl,type = c("g", "p", "smooth"))
+
+varImp(salary_mdl)
+
+salary_pred_tune = predict(salary_mdl,tune, type= "raw")
+
+levels(tune$salary) <- c("lower", "greater")
+#View(tune$salary)
+
+
+#Lets use the confusion matrix
+
+(salary_eval <- confusionMatrix(as.factor(salary_pred_tune), 
+                as.factor(tune$salary), 
+                dnn=c("Prediction", "Actual"), 
+                mode = "sens_spec"))
+
+# table(tune$salary)
+# 
+# salary_pred_tune_p = predict(salary_mdl,tune,type= "prob")
+# 
+# 
+# View(salary_pred_tune_p)
+
 
 ```
 
+
+## Performance
+
+The model performed slightly better on the test set with an accuracy of 0.8663 versus an accuracy of .8597 on the validation set. This suggests that he model did not over-fit and generalized well to the problem. 
 ```{r}
 #16 Once you are confident that your model is not improving, via changes 
 # implemented on the training set and evaluated on the the validation set (item 16), predict with the test set and report a final evaluation of the model. Discuss the output in comparison with the previous evaluations.  
+
+
+salary_pred_test = predict(salary_mdl,test, type= "raw")
+
+levels(test$salary) <- c("lower", "greater")
+
+#Lets use the confusion matrix
+
+(salary_eval <- confusionMatrix(as.factor(salary_pred_test), 
+                as.factor(test$salary), 
+                dnn=c("Prediction", "Actual"), 
+                mode = "sens_spec"))
+
 ```
 
+## Summary
+
+I learned how to apply my skills from previous assignments into this project. For instance, I gained a better understanding of how I can plot ROC/AUC curve for this classification project I also developed a stronger grasp of why separating phases of a machine learning project into training, tuning, and testing is important to develop an effective model. This model can be improved through better feature-engineering and more thoughtful selection of features. We could also do more exploratory analysis to help with this. This model can be used to help those who might be in need of financial assistance based on various factors. We can use this model to predict who might be low-income versus who might not in order to take action earlier.
 ```{r}
 #17 Summarize what you learned along the way and make recommendations on how this could be used moving forward, being careful not to over promise. 
+
 ```
+
+## Reflection
+
+The most interesting and hardest part of this process was creating a visualization of the decision tree. Understanding each step of this process was difficult and required a lot of research into each library function involved. A question I still have is how machine learning practitioners deploy their models. Currently these live on notebooks which seem cumbersome to use. How can a model such as this be hosted independently and used like an API?
 
 ```{r}
 #18 What was the most interesting or hardest part of this process and what questions do you still have? 
+
 ```
 
 
