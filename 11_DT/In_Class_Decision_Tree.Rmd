@@ -79,6 +79,10 @@ View(xx)
 View(xx1h)
 ```
 
+```{r}
+names <- c("age","workclass","fnlwgt","education","education-num","marital-status","occupation","relationship","race","sex","capital-gain","capital-loss","hours-per-week","native-country", "salary")
+```
+
 
  Footnotes: 
 -	You can add or combine steps if needed
